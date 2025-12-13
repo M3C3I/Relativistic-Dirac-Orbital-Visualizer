@@ -43,27 +43,47 @@ from dirac_core import (
 def compute_isosurface_colors_vectorized(
     points_array: np.ndarray,
     color_volume: np.ndarray,
-    grid: DiracGridConfig
+    grid: DiracGridConfig,
+    skip_normalization: bool = False
 ) -> np.ndarray:
-    """Vectorized computation of colors for isosurface points."""
+    """
+    Vectorized computation of colors for isosurface points.
+    
+    FIX GUI-003: Added skip_normalization parameter for phase/spin modes
+    where color volume is already normalized to [0,1].
+    """
     if points_array is None or len(points_array) == 0:
         return np.array([], dtype=np.float32)
     
     nx, ny, nz = color_volume.shape
-    dx = (grid.x_max - grid.x_min) / max(nx - 1, 1)
-    dy = (grid.y_max - grid.y_min) / max(ny - 1, 1)
-    dz = (grid.z_max - grid.z_min) / max(nz - 1, 1)
+    
+    # FIX GUI-NEW-003: Guard against zero range to avoid division by zero
+    eps = 1e-12
+    x_range = grid.x_max - grid.x_min
+    y_range = grid.y_max - grid.y_min
+    z_range = grid.z_max - grid.z_min
+    
+    dx = x_range / max(nx - 1, 1) if abs(x_range) > eps else 1.0
+    dy = y_range / max(ny - 1, 1) if abs(y_range) > eps else 1.0
+    dz = z_range / max(nz - 1, 1) if abs(z_range) > eps else 1.0
     
     ix = np.clip(np.round((points_array[:, 0] - grid.x_min) / dx).astype(int), 0, nx - 1)
     iy = np.clip(np.round((points_array[:, 1] - grid.y_min) / dy).astype(int), 0, ny - 1)
     iz = np.clip(np.round((points_array[:, 2] - grid.z_min) / dz).astype(int), 0, nz - 1)
     
     color_vals = color_volume[ix, iy, iz].astype(np.float32)
-    cmin, cmax = color_vals.min(), color_vals.max()
-    if cmax > cmin:
-        color_vals = (color_vals - cmin) / (cmax - cmin)
+    
+    # FIX GUI-003: Only normalize for amplitude mode, not phase/spin
+    if not skip_normalization:
+        cmin, cmax = color_vals.min(), color_vals.max()
+        if cmax > cmin:
+            color_vals = (color_vals - cmin) / (cmax - cmin)
+        else:
+            color_vals[:] = 0.5
     else:
-        color_vals[:] = 0.5
+        # Just clamp to [0, 1] for pre-normalized volumes
+        color_vals = np.clip(color_vals, 0.0, 1.0)
+    
     return color_vals
 
 
@@ -114,6 +134,16 @@ class Dirac3DView(QWidget):
         self._last_diag = 0.0
         self._image_data = None
         self._contour_filter = None
+        self._interactor_initialized = False  # FIX VTK-001
+
+    def showEvent(self, event):
+        """FIX VTK-001: Initialize VTK interactor on first show."""
+        super().showEvent(event)
+        if not self._interactor_initialized:
+            interactor = self.vtk_widget.GetRenderWindow().GetInteractor()
+            if interactor:
+                interactor.Initialize()
+            self._interactor_initialized = True
 
     def update_from_density(self, density, grid, iso_fraction=0.1, color_volume=None, color_mode="phase", iso_mode="percentile"):
         if density is None or not np.any(density > 0):
@@ -133,9 +163,14 @@ class Dirac3DView(QWidget):
         else:
             iso_value = iso_fraction * float(np.max(density))
         nx, ny, nz = density.shape
-        dx = (grid.x_max - grid.x_min) / max(nx - 1, 1)
-        dy = (grid.y_max - grid.y_min) / max(ny - 1, 1)
-        dz = (grid.z_max - grid.z_min) / max(nz - 1, 1)
+        # FIX BUG-002: Guard against zero spacing (VTK requires positive spacing)
+        eps = 1e-10
+        x_range = grid.x_max - grid.x_min
+        y_range = grid.y_max - grid.y_min
+        z_range = grid.z_max - grid.z_min
+        dx = x_range / max(nx - 1, 1) if abs(x_range) > eps else 1.0
+        dy = y_range / max(ny - 1, 1) if abs(y_range) > eps else 1.0
+        dz = z_range / max(nz - 1, 1) if abs(z_range) > eps else 1.0
         if self._image_data is None:
             self._image_data = vtkImageData()
         image = self._image_data
@@ -160,7 +195,11 @@ class Dirac3DView(QWidget):
             points = polydata.GetPoints()
             if points and points.GetNumberOfPoints() > 0:
                 points_array = vtk_np.vtk_to_numpy(points.GetData())
-                color_vals = compute_isosurface_colors_vectorized(points_array, color_volume, grid)
+                # FIX GUI-003: Skip normalization for phase/spin modes (already [0,1])
+                skip_norm = color_mode in ("phase", "spin")
+                color_vals = compute_isosurface_colors_vectorized(
+                    points_array, color_volume, grid, skip_normalization=skip_norm
+                )
                 vtk_colors = vtk_np.numpy_to_vtk(color_vals, deep=True)
                 vtk_colors.SetName("colors")
                 polydata.GetPointData().SetScalars(vtk_colors)
@@ -175,7 +214,8 @@ class Dirac3DView(QWidget):
         actor = vtkActor()
         actor.SetMapper(mapper)
         actor.GetProperty().SetOpacity(0.8)
-        if color_volume is None:
+        # FIX GUI-005: Set consistent fallback color when scalar visibility is off
+        if color_volume is None or not mapper.GetScalarVisibility():
             actor.GetProperty().SetColor(self.colors.GetColor3d("Cyan"))
         if self._actor:
             self.renderer.RemoveActor(self._actor)
@@ -229,7 +269,10 @@ class DiracSliceView(pg.ImageView):
         self.ui.roiBtn.hide()
 
     def update_from_slice(self, slice_data):
-        if slice_data is not None:
+        # FIX GUI-NEW-001: Use safe empty image instead of potentially missing clear()
+        if slice_data is None:
+            self.setImage(np.zeros((2, 2), dtype=np.float32), autoLevels=False)
+        else:
             self.setImage(slice_data.T, autoLevels=True)
 
 
@@ -243,6 +286,13 @@ class DiracLineView(pg.PlotWidget):
         self._curve_radial = None
 
     def update_from_profiles(self, profiles):
+        # FIX GUI-001: Handle empty profiles to clear view
+        if not profiles:
+            if self._curve_line is not None:
+                self._curve_line.setData([], [])
+            if self._curve_radial is not None:
+                self._curve_radial.setData([], [])
+            return
         if "line" in profiles:
             x, y = profiles["line"]
             if self._curve_line is None:
@@ -522,7 +572,8 @@ class TransitionControlPanel(QWidget):
                 self.lbl_detuning.setText(f"{info['detuning']:.6e}")
             else:
                 self.lbl_detuning.setText("0 (resonant)")
-            if info["dipole_magnitude"]:
+            # FIX GUI-004: Use 'is not None' instead of truthiness (0.0 is valid)
+            if info["dipole_magnitude"] is not None:
                 self.lbl_dipole.setText(f"{info['dipole_magnitude']:.6e}")
             else:
                 self.lbl_dipole.setText("--")
@@ -536,6 +587,7 @@ class ViewControlPanel(QWidget):
     viewSettingsChanged = Signal()
     playbackToggled = Signal(bool)
     resetCameraRequested = Signal()
+    gridChanged = Signal()  # FIX BUG-005: Signal for grid changes requiring panel refresh
 
     def __init__(self, solver, parent=None):
         super().__init__(parent)
@@ -654,6 +706,7 @@ class ViewControlPanel(QWidget):
         )
         try:
             self.solver.update_grid(new_grid)
+            self.gridChanged.emit()  # FIX BUG-005: Notify panels to refresh
             self.viewSettingsChanged.emit()
         except Exception as e:
             QMessageBox.warning(self, "Grid Update Error", f"Failed to update grid: {e}")
@@ -730,6 +783,13 @@ class DiagnosticsPanel(QWidget):
         except Exception:
             pass
 
+    def clear_display(self):
+        """FIX GUI-001: Clear all diagnostic displays."""
+        self.lbl_t.setText("--")
+        self.lbl_prob.setText("--")
+        self.lbl_r.setText("--")
+        self.lbl_Sz.setText("--")
+
 
 class VisualizationController:
     def __init__(self, solver, view3d, view2d, view1d, view_panel, diag_panel):
@@ -741,7 +801,12 @@ class VisualizationController:
         self.diag_panel = diag_panel
 
     def refresh(self):
+        # FIX GUI-001: Clear all views when no states remain
         if self.solver.superposition.n_states() == 0:
+            self.view3d.update_from_density(None, self.solver.grid)
+            self.view2d.update_from_slice(None)
+            self.view1d.update_from_profiles({})
+            self.diag_panel.clear_display()
             return
         psi = self.solver.total_spinor_current()
         density = self.solver._compute_density_optimized(psi)
@@ -752,18 +817,30 @@ class VisualizationController:
             color_vol, self.view_panel.color_mode,
             self.view_panel.iso_mode
         )
+        
+        # FIX GUI-002: Use slice_quantity from view panel instead of always using total density
         mid = (self.solver.grid.nx//2, self.solver.grid.ny//2, self.solver.grid.nz//2)
         plane = self.view_panel.slice_plane
+        quantity = self.view_panel.slice_quantity
+        
+        # Compute the appropriate slice based on quantity
+        if quantity == "large":
+            slice_source = np.real(np.sum(np.abs(psi[:2])**2, axis=0))
+        elif quantity == "small":
+            slice_source = np.real(np.sum(np.abs(psi[2:])**2, axis=0))
+        else:  # "density" or default
+            slice_source = density
+        
         if plane == "xy":
-            slice_data = density[:, :, mid[2]]
+            slice_data = slice_source[:, :, mid[2]]
         elif plane == "xz":
-            slice_data = density[:, mid[1], :]
+            slice_data = slice_source[:, mid[1], :]
         else:
-            slice_data = density[mid[0], :, :]
+            slice_data = slice_source[mid[0], :, :]
         self.view2d.update_from_slice(slice_data)
         line_coord = np.linspace(self.solver.grid.z_min, self.solver.grid.z_max, self.solver.grid.nz)
         line_prof = density[mid[0], mid[1], :]
-        rad_coord, rad_prof = radial_distribution_optimized(self.solver.R, density)
+        rad_coord, rad_prof = self.solver.radial_distribution()
         self.view1d.update_from_profiles({"line": (line_coord, line_prof), "radial": (rad_coord, rad_prof)})
         self.diag_panel.update_from_solver()
 
@@ -849,6 +926,13 @@ class MainWindow(QMainWindow):
         self.view_panel.viewSettingsChanged.connect(self.controller.refresh)
         self.view_panel.playbackToggled.connect(self._on_playback_toggled)
         self.view_panel.resetCameraRequested.connect(self.view3d.reset_camera)
+        # FIX BUG-005: Refresh state panels after grid changes
+        self.view_panel.gridChanged.connect(self._on_grid_changed)
+
+    def _on_grid_changed(self):
+        """FIX BUG-005: Refresh UI panels after grid change."""
+        self.state_panel.refresh_state_list()
+        self.trans_panel.refresh_state_combos()
 
     def _setup_timer(self):
         self.timer = QTimer(self)
