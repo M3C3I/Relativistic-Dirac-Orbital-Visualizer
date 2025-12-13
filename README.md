@@ -1,54 +1,69 @@
+## DISCLAIMER
+
+I’m not an expert in physics or numerical methods, and a lot of this was built via iterative “vibe coding” (rapid prototyping + testing-by-looking). Still: the goal is **not** a throwaway toy. This is meant to become a **serious, reviewable** visualization/learning tool for relativistic hydrogenic states and E1-driven dynamics.
+
+For now:
+
+* Expect **approximations** (some intentional) and possible **numerical edge cases**.
+* **Please don’t cite this repo as a validated physics reference yet.** Independently verify anything that affects grades, grants, or reputations.
+
+If you find a bug (or a minus sign achieving escape velocity), open an issue/PR—help making this solid is welcome.
+
 # Relativistic Dirac Orbital Visualizer
 
-A high-performance Python application for visualizing relativistic hydrogen-like wavefunctions and dipole transitions using the Dirac equation.
+A high-performance Python application for visualizing hydrogen-like 4-component spinors and dipole-driven time evolution.
 
 ## Overview
 
-This application provides real-time 3D visualization of analytic hydrogenic Dirac eigenstates and their time evolution under electric dipole (E1) transitions. It features:
+This application provides interactive 3D visualization of hydrogenic states (Dirac quantum numbers) and their time evolution under an electric dipole (E1) driving field. It features:
 
-- **Relativistic Quantum Mechanics**: Full 4-component Dirac spinor wavefunctions
-- **3D Isosurface Rendering**: VTK-based visualization with phase/spin coloring
-- **Time Evolution**: Both stationary and driven dynamics
-- **Selection Rules**: Automatic E1 transition validation
-- **High Performance**: Numba JIT compilation and parallel processing
+- **Relativistic structure**: 4-component spinor fields on a 3D grid
+- **3D isosurface rendering**: VTK-based visualization with phase/amplitude/spin coloring
+- **Time evolution**: stationary phase evolution and driven two-state dynamics in a truncated basis
+- **Selection rules**: automatic E1 validation + allowed Δm display
+- **Performance**: Numba JIT (optional) + threaded numeric backends
 
-## Physics Background
+## Physics / Model Notes
 
-### Dirac Equation
+### Conceptual Hamiltonian
 
-The code solves the single-particle Dirac-Coulomb problem for hydrogenic atoms:
+The intended physical model is the single-particle Dirac–Coulomb problem:
 
 ```
-H = α·p + βm + V(r)
-```
 
-where `V(r) = -Zα/r` is the Coulomb potential in natural units (ℏ = c = mₑ = 1).
+H = α·p + βm + V(r),    V(r) = -Zα/r
 
-### Supported Features
+````
 
-- Exact analytic Dirac eigenstates for hydrogen-like atoms
-- Electric dipole (E1) matrix elements via radial integration
-- Time evolution with classical driving fields
-- Quantum numbers: n, κ (kappa), mⱼ
+in natural units (ℏ = c = mₑ = 1).
 
-### Limitations
+**Important implementation note:** this repo does **not** solve a PDE eigenvalue problem on the 3D grid. It **constructs** spinor fields from analytic building blocks for visualization and uses 1D radial quadrature for dipole elements (with a fallback 3D grid integral for non-bound/missing-QN cases).
 
-- No QED radiative corrections (Lamb shift, vacuum polarization)
-- Classical electromagnetic fields only
-- Truncated basis for driven dynamics
+### What’s “exact” vs “approx” in the current code
+
+- **Energies:** hydrogenic Dirac energies use the standard closed-form expression (point nucleus).
+- **Wavefunctions:** the current radial construction in `hydrogenic_dirac_radial(...)` is a **simplified hydrogenic model** used to generate visually/qualitatively reasonable 4-spinors on the grid (i.e., treat the fields as **approximate** until further validated).
+- **E1 elements:** computed via **radial integration** using the current radial model + angular factors (Wigner 3j–style machinery in code).
+
+### Limitations (current scope)
+
+- No QED radiative corrections (Lamb shift, vacuum polarization, etc.)
+- Classical driving field only: `E(t) = E₀ cos(ωt)`
+- Truncated basis dynamics (you evolve coefficients in the chosen state list)
+- Point-nucleus Coulomb potential (no finite nuclear size)
 
 ## Installation
 
 ### Prerequisites
 
-- Python 3.9 or higher
-- A display capable of OpenGL rendering
+- **Python 3.10+** (GUI code uses `X | Y` type syntax)
+- A display capable of OpenGL rendering (VTK)
 
 ### Required Dependencies
 
 ```bash
 pip install numpy scipy PySide6 pyqtgraph vtk
-```
+````
 
 ### Optional (Recommended for Performance)
 
@@ -56,7 +71,7 @@ pip install numpy scipy PySide6 pyqtgraph vtk
 pip install numba
 ```
 
-Installing Numba enables JIT compilation which provides **2-10x speedup** for numerical computations.
+Numba enables JIT compilation and can provide significant speedups for the density/superposition/color-volume bottlenecks.
 
 ### Full Installation
 
@@ -71,6 +86,7 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 # Install dependencies
 pip install -r requirements.txt
+```
 
 ## Usage
 
@@ -82,24 +98,23 @@ python gui_app.py
 
 ### Adding States
 
-1. Open the **States** tab in the control panel
+1. Open the **States** tab
 2. Set the quantum numbers:
-   - **n**: Principal quantum number (1, 2, 3, ...)
-   - **κ**: Dirac quantum number (±1, ±2, ...; κ=0 is forbidden)
-   - **mⱼ**: Magnetic quantum number (-j to +j in half-integer steps)
+
+   * **n**: principal quantum number (1, 2, 3, ...)
+   * **κ**: Dirac quantum number (±1, ±2, ...; κ=0 is forbidden)
+   * **mⱼ**: magnetic quantum number (−j to +j in half-integer steps)
 3. Click **Add Bound State**
 
 ### Understanding κ (Kappa)
 
-The Dirac quantum number κ encodes both orbital and total angular momentum:
-
-| κ | l | j | Spectroscopic |
-|---|---|---|---------------|
-| -1 | 0 | 1/2 | s₁/₂ |
-| +1 | 1 | 1/2 | p₁/₂ |
-| -2 | 1 | 3/2 | p₃/₂ |
-| +2 | 2 | 3/2 | d₃/₂ |
-| -3 | 2 | 5/2 | d₅/₂ |
+| κ  | l | j   | Spectroscopic |
+| -- | - | --- | ------------- |
+| -1 | 0 | 1/2 | s₁/₂          |
+| +1 | 1 | 1/2 | p₁/₂          |
+| -2 | 1 | 3/2 | p₃/₂          |
+| +2 | 2 | 3/2 | d₃/₂          |
+| -3 | 2 | 5/2 | d₅/₂          |
 
 ### Setting Up Transitions
 
@@ -109,187 +124,139 @@ The Dirac quantum number κ encodes both orbital and total angular momentum:
 4. Choose polarization (z, x, or y)
 5. Set field amplitude E₀
 6. Click **Apply Transition**
-7. Switch evolution mode to "Driven Transition"
+7. Switch evolution mode to **Driven Transition**
 8. Press **Play** to see time evolution
 
 ### Selection Rules
 
-E1 transitions require:
-- Δl = ±1 (parity change)
-- Δj = 0, ±1 (but j=0 → j=0 forbidden)
-- Δmⱼ = q, where q depends on polarization:
-  - z-polarized: Δmⱼ = 0
-  - x-polarized: Δmⱼ = ±1
-  - y-polarized: Δmⱼ = ±1
+The GUI checks E1-style constraints and shows allowed Δm values based on polarization:
 
-The GUI automatically validates these rules and displays allowed Δm values.
+* z-polarized: Δmⱼ = 0
+* x/y-polarized: Δmⱼ = ±1 (depending on spherical components present)
 
-### Visualization Controls
+(See `check_e1_selection_rules(...)` in `dirac_core.py`.)
 
-#### 3D View
-- **Iso level slider**: Adjust isosurface threshold (percentile-based by default)
-- **Color mode**: Phase, Amplitude, or Spin
-- **Reset Camera**: Return to default view
-- Click and drag to rotate, scroll to zoom
+## Visualization Controls
 
-#### 2D Slice
-- Select viewing plane (xy, xz, or yz)
-- Choose quantity (total density, large/small components)
+### 3D View
 
-#### Grid Resolution
-- Available sizes: 32³, 48³, 64³, 96³, 128³, 256³
-- Higher resolution = better quality but slower rendering
+* **Threshold mode**:
+
+  * **Percentile (robust)**: chooses an isosurface intended to enclose a target fraction of total probability mass (heuristic, histogram-based)
+  * **Fraction of max**: uses a simple `iso = f * max(density)`
+* **Color mode**: Phase, Amplitude, or Spin
+* **Reset Camera**
+* Mouse controls: drag to rotate, scroll to zoom
+
+### 2D Slice
+
+* Select plane (xy, xz, yz)
+* Choose quantity (total density, large, small)
+
+### Grid Resolution
+
+* Available: 32³, 48³, 64³, 96³, 128³, 256³
+* Higher resolution looks better but is heavier on CPU/RAM.
 
 ## Performance Optimization
 
-### Hardware Utilization
+* **Numba JIT**: accelerates density/superposition/color volume
+* **Threaded numeric backends**: environment variables are set early in `dirac_core.py`
 
-The optimized code utilizes available CPU cores through:
-
-1. **Numba JIT Compilation**: Parallel loops with `prange`
-2. **NumPy Threading**: Automatic BLAS parallelization
-3. **Vectorized Operations**: Eliminates Python loops
-
-### Performance Tips
-
-1. **Install Numba**: Provides 2-10x speedup
-   ```bash
-   pip install numba
-   ```
-
-2. **Use appropriate grid size**:
-   - 64³ for exploration (default)
-   - 96³-128³ for high-quality renders
-   - 32³ for fast iteration
-
-3. **Check performance status**: The View tab shows:
-   - Numba JIT status (✓ Enabled / ✗ Not available)
-   - Number of threads being used
-
-### Threading Configuration
-
-The application automatically detects available CPU cores. To manually configure:
+If you want to override threads, set these **before importing** the module:
 
 ```python
 import os
-os.environ['OMP_NUM_THREADS'] = '8'
-os.environ['NUMBA_NUM_THREADS'] = '8'
+os.environ["OMP_NUM_THREADS"] = "8"
+os.environ["NUMBA_NUM_THREADS"] = "8"
 ```
 
-Set these **before** importing the module.
-
-## API Reference
-
-### DiracSolver
-
-Main computation class:
+## API Reference (Minimal)
 
 ```python
 from dirac_core import DiracSolver, DiracGridConfig, FieldConfig
 
-# Create solver
 grid = DiracGridConfig(nx=64, ny=64, nz=64)
-solver = DiracSolver(grid, FieldConfig(Z=1))
+solver = DiracSolver(grid, FieldConfig(Z=1), include_rest_mass=False)
 
-# Add states
-solver.add_bound_state(n=1, kappa=-1, mj=0.5)  # 1s₁/₂
-solver.add_bound_state(n=2, kappa=+1, mj=0.5)  # 2p₁/₂
+solver.add_bound_state(n=1, kappa=-1, mj=0.5)
+solver.add_bound_state(n=2, kappa=+1, mj=0.5)
 
-# Time evolution
 solver.step(dt=1.0)
-
-# Get density
 density = solver.density_3d_current()
-```
-
-### Key Functions
-
-```python
-# Dirac energy levels
-from dirac_core import hydrogenic_dirac_energy
-E = hydrogenic_dirac_energy(n=2, kappa=-1, Z=1)
-
-# Check selection rules
-from dirac_core import check_e1_selection_rules
-allowed, reason, dm_list = check_e1_selection_rules(state_i, state_f, polarization)
-
-# Performance info
-from dirac_core import get_performance_info
-info = get_performance_info()
-print(f"Numba available: {info['numba_available']}")
-print(f"Threads: {info['num_threads']}")
 ```
 
 ## File Format
 
-Configurations can be saved/loaded as `.npz` files containing:
-- Grid parameters
-- Nuclear charge Z
-- State quantum numbers and spinors
-- Superposition coefficients
-- Transition settings
+Saved configurations are `.npz` files containing:
+
+* grid parameters
+* field parameters (Z, Coulomb enable)
+* state metadata (quantum numbers / free-state params)
+* coefficients and time
+* transition settings (if driven)
+
+**Note:** spinor arrays are not stored; states are rebuilt from metadata on load.
 
 ## Troubleshooting
 
-### "VTK not found" Error
+### “VTK not found”
 
 ```bash
 pip install vtk
 ```
 
-On Linux, you may need OpenGL libraries:
+Linux may need OpenGL libs:
+
 ```bash
 sudo apt-get install libgl1-mesa-dev
 ```
 
-### Slow Performance
+### Slow performance
 
-1. Install Numba: `pip install numba`
-2. Reduce grid resolution in View tab
-3. Check thread count in Performance panel
+* Install Numba: `pip install numba`
+* Reduce grid size (64³ is a good default)
+* Avoid 256³ unless you have plenty of RAM (it can require multiple GB depending on state count)
 
-### Black/Empty 3D View
+### Black/empty 3D view
 
-- Add at least one state
-- Adjust iso level slider (try 5-15%)
-- Click "Reset Camera"
-
-### Memory Issues with Large Grids
-
-- 256³ grid requires ~4GB RAM
-- Use 64³ or 96³ for most applications
+* Add at least one state
+* Adjust threshold (try 5–15%)
+* Reset camera
 
 ## Contributing
 
-Contributions are welcome! Please:
+Contributions welcome:
 
-1. Fork the repository
+1. Fork the repo
 2. Create a feature branch
-3. Add tests for new functionality
-4. Submit a pull request
+3. Add tests / validation notes where possible
+4. Submit a PR
 
+## Citation / Referencing (for now)
 
-## Citation
+This project is **not yet validated** for academic citation as a physics reference.
 
-If you use this software in research, please cite:
+If you still need to reference it (e.g., for a demo/tools section), please cite the GitHub repo **with a commit hash** and treat it as software-in-progress:
 
 ```bibtex
 @software{relativistic_dirac_orbital_visualizer,
   title = {Relativistic Dirac Orbital Visualizer},
   year = {2025},
+  note = {Software in progress; cite with commit hash},
   url = {https://github.com/M3C3I/Relativistic-Dirac-Orbital-Visualizer.git}
 }
 ```
 
 ## Acknowledgments
 
-- Dirac equation formulation follows Bjorken & Drell conventions
-- Spherical harmonics from SciPy
-- 3D rendering via VTK
-- GUI framework: PySide6 (Qt for Python)
+* Dirac matrix conventions: Bjorken & Drell
+* Spherical harmonics: SciPy
+* 3D rendering: VTK
+* GUI: PySide6 (Qt for Python)
 
 ## References
 
-1. Bjorken, J.D. & Drell, S.D. "Relativistic Quantum Mechanics" (1964)
-2. Berestetskii, V.B. et al. "Quantum Electrodynamics" (1982)
-3. Grant, I.P. "Relativistic Quantum Theory of Atoms and Molecules" (2007)
+1. Bjorken, J.D. & Drell, S.D. *Relativistic Quantum Mechanics* (1964)
+2. Berestetskii, V.B. et al. *Quantum Electrodynamics* (1982)
+3. Grant, I.P. *Relativistic Quantum Theory of Atoms and Molecules* (2007)
