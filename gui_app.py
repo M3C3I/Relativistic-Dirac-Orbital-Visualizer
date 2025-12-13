@@ -1,4 +1,3 @@
-# gui_app.py - Relativistic Dirac Orbital Visualizer
 """
 PySide6/VTK GUI for visualizing Dirac equation solutions
 and dipole transitions in hydrogenic atoms.
@@ -9,16 +8,33 @@ PERFORMANCE OPTIMIZATIONS:
 - Optimized radial distribution binning
 - Uses solver's optimized compute_color_volume method
 """
+
 from __future__ import annotations
 import sys
-from typing import Dict, Tuple, Optional
+from typing import Dict, Optional
 import numpy as np
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QSplitter, QDockWidget, QTabWidget, QLabel, QSpinBox, QDoubleSpinBox,
-    QPushButton, QListWidget, QFormLayout, QGroupBox,
-    QCheckBox, QComboBox, QSlider, QMessageBox, QFileDialog,
+    QApplication,
+    QMainWindow,
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QSplitter,
+    QDockWidget,
+    QTabWidget,
+    QLabel,
+    QSpinBox,
+    QDoubleSpinBox,
+    QPushButton,
+    QListWidget,
+    QFormLayout,
+    QGroupBox,
+    QCheckBox,
+    QComboBox,
+    QSlider,
+    QMessageBox,
+    QFileDialog,
 )
 import pyqtgraph as pg
 
@@ -34,9 +50,15 @@ from vtkmodules.vtkInteractionStyle import vtkInteractorStyleTrackballCamera
 from vtkmodules.vtkRenderingOpenGL2 import *
 
 from dirac_core import (
-    DiracSolver, DiracGridConfig, FieldConfig, TransitionConfig,
-    kappa_to_l_j, ALPHA_FS, check_e1_selection_rules, get_performance_info,
-    NUMBA_AVAILABLE
+    DiracSolver,
+    DiracGridConfig,
+    FieldConfig,
+    TransitionConfig,
+    kappa_to_l_j,
+    ALPHA_FS,
+    check_e1_selection_rules,
+    get_performance_info,
+    NUMBA_AVAILABLE,
 )
 
 
@@ -44,36 +66,40 @@ def compute_isosurface_colors_vectorized(
     points_array: np.ndarray,
     color_volume: np.ndarray,
     grid: DiracGridConfig,
-    skip_normalization: bool = False
+    skip_normalization: bool = False,
 ) -> np.ndarray:
     """
     Vectorized computation of colors for isosurface points.
-    
+
     FIX GUI-003: Added skip_normalization parameter for phase/spin modes
     where color volume is already normalized to [0,1].
     """
     if points_array is None or len(points_array) == 0:
         return np.array([], dtype=np.float32)
-    
+
     nx, ny, nz = color_volume.shape
-    
-    # FIX GUI-NEW-003: Guard against zero range to avoid division by zero
+
     eps = 1e-12
     x_range = grid.x_max - grid.x_min
     y_range = grid.y_max - grid.y_min
     z_range = grid.z_max - grid.z_min
-    
+
     dx = x_range / max(nx - 1, 1) if abs(x_range) > eps else 1.0
     dy = y_range / max(ny - 1, 1) if abs(y_range) > eps else 1.0
     dz = z_range / max(nz - 1, 1) if abs(z_range) > eps else 1.0
-    
-    ix = np.clip(np.round((points_array[:, 0] - grid.x_min) / dx).astype(int), 0, nx - 1)
-    iy = np.clip(np.round((points_array[:, 1] - grid.y_min) / dy).astype(int), 0, ny - 1)
-    iz = np.clip(np.round((points_array[:, 2] - grid.z_min) / dz).astype(int), 0, nz - 1)
-    
+
+    ix = np.clip(
+        np.round((points_array[:, 0] - grid.x_min) / dx).astype(int), 0, nx - 1
+    )
+    iy = np.clip(
+        np.round((points_array[:, 1] - grid.y_min) / dy).astype(int), 0, ny - 1
+    )
+    iz = np.clip(
+        np.round((points_array[:, 2] - grid.z_min) / dz).astype(int), 0, nz - 1
+    )
+
     color_vals = color_volume[ix, iy, iz].astype(np.float32)
-    
-    # FIX GUI-003: Only normalize for amplitude mode, not phase/spin
+
     if not skip_normalization:
         cmin, cmax = color_vals.min(), color_vals.max()
         if cmax > cmin:
@@ -81,30 +107,15 @@ def compute_isosurface_colors_vectorized(
         else:
             color_vals[:] = 0.5
     else:
-        # Just clamp to [0, 1] for pre-normalized volumes
+
         color_vals = np.clip(color_vals, 0.0, 1.0)
-    
+
     return color_vals
-
-
-def radial_distribution_optimized(R: np.ndarray, density: np.ndarray, n_bins: int = 100) -> Tuple[np.ndarray, np.ndarray]:
-    """Optimized radial distribution using numpy histogram."""
-    r_flat = R.ravel()
-    d_flat = density.ravel()
-    r_max = float(np.max(r_flat))
-    if r_max <= 0:
-        return np.zeros(n_bins), np.zeros(n_bins)
-    hist, bin_edges = np.histogram(r_flat, bins=n_bins, range=(0, r_max), weights=d_flat)
-    counts, _ = np.histogram(r_flat, bins=n_bins, range=(0, r_max))
-    with np.errstate(invalid='ignore', divide='ignore'):
-        radial_prof = np.where(counts > 0, hist / counts, 0)
-    bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
-    return bin_centers, radial_prof
 
 
 class Dirac3DView(QWidget):
     """VTK-based 3D isosurface visualization."""
-    
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         layout = QVBoxLayout(self)
@@ -134,7 +145,10 @@ class Dirac3DView(QWidget):
         self._last_diag = 0.0
         self._image_data = None
         self._contour_filter = None
-        self._interactor_initialized = False  # FIX VTK-001
+        self._interactor_initialized = False
+        # FIX BUG-NEW-007: Reuse mapper and actor to avoid memory churn
+        self._mapper = None
+        self._vtk_density_array = None
 
     def showEvent(self, event):
         """FIX VTK-001: Initialize VTK interactor on first show."""
@@ -145,25 +159,77 @@ class Dirac3DView(QWidget):
                 interactor.Initialize()
             self._interactor_initialized = True
 
-    def update_from_density(self, density, grid, iso_fraction=0.1, color_volume=None, color_mode="phase", iso_mode="percentile"):
+    def update_from_density(
+        self,
+        density,
+        grid,
+        iso_fraction=0.1,
+        color_volume=None,
+        color_mode="phase",
+        iso_mode="percentile",
+    ):
         if density is None or not np.any(density > 0):
+            # FIX BUG-007: Also clear mapper when clearing actor to avoid stale state
             if self._actor:
                 self.renderer.RemoveActor(self._actor)
                 self._actor = None
+            self._mapper = None  # Clear mapper too
             self.vtk_widget.GetRenderWindow().Render()
             return
         iso_fraction = float(np.clip(iso_fraction, 0.01, 0.99))
+
+        # FIX BUG-004: Compute iso_value based on actual enclosed probability
+        # FIX BUG-NEW-006: Use histogram-based O(N) approach instead of sorting
         if iso_mode == "percentile":
-            positive_vals = density[density > 1e-15]
-            if len(positive_vals) > 0:
-                percentile = 80 + (iso_fraction - 0.01) * (99.9 - 80) / 0.98
-                iso_value = float(np.percentile(positive_vals, percentile))
+            # Compute volume element
+            nx, ny, nz = density.shape
+            eps = 1e-10
+            x_range = grid.x_max - grid.x_min
+            y_range = grid.y_max - grid.y_min
+            z_range = grid.z_max - grid.z_min
+            dx = x_range / max(nx - 1, 1) if abs(x_range) > eps else 1.0
+            dy = y_range / max(ny - 1, 1) if abs(y_range) > eps else 1.0
+            dz = z_range / max(nz - 1, 1) if abs(z_range) > eps else 1.0
+            dv = dx * dy * dz
+
+            flat_density = density.ravel()
+            d_max = float(np.max(flat_density))
+            d_min = float(np.min(flat_density[flat_density > 1e-15])) if np.any(flat_density > 1e-15) else 0.0
+
+            if d_max > d_min:
+                # Use histogram to compute cumulative probability distribution
+                # This is O(N) instead of O(N log N) for sorting
+                # FIX BUG-014: Scale bins based on grid size
+                n_points = nx * ny * nz
+                n_bins = min(1000, max(100, int(np.sqrt(n_points))))
+                bin_edges = np.linspace(d_min, d_max, n_bins + 1)
+
+                # Histogram of probability mass in each density bin
+                hist_prob, _ = np.histogram(flat_density, bins=bin_edges, weights=flat_density * dv)
+
+                # Cumulative probability from HIGH density to LOW (reversed)
+                cumulative_prob_reversed = np.cumsum(hist_prob[::-1])[::-1]
+                total_prob = cumulative_prob_reversed[0] if len(cumulative_prob_reversed) > 0 else 0.0
+
+                if total_prob > 1e-15:
+                    cumulative_prob_reversed /= total_prob
+                    # iso_fraction=0.1 means surface enclosing 90% probability
+                    # We want to find density threshold where cumulative >= target_prob
+                    target_prob = 1.0 - iso_fraction
+                    # Find bin where cumulative probability crosses target
+                    idx = np.searchsorted(cumulative_prob_reversed[::-1], target_prob)
+                    idx = n_bins - idx  # Convert back to original order
+                    idx = max(0, min(idx, n_bins - 1))
+                    iso_value = float(bin_edges[idx])
+                else:
+                    iso_value = 0.0
             else:
-                iso_value = 0.0
+                iso_value = d_max * 0.5
         else:
             iso_value = iso_fraction * float(np.max(density))
+
         nx, ny, nz = density.shape
-        # FIX BUG-002: Guard against zero spacing (VTK requires positive spacing)
+
         eps = 1e-10
         x_range = grid.x_max - grid.x_min
         y_range = grid.y_max - grid.y_min
@@ -188,14 +254,19 @@ class Dirac3DView(QWidget):
         contour.SetValue(0, iso_value)
         contour.Update()
         self._configure_lut(color_mode)
-        mapper = vtkPolyDataMapper()
+
+        # FIX BUG-NEW-007: Reuse mapper instead of creating new one every frame
+        if self._mapper is None:
+            self._mapper = vtkPolyDataMapper()
+        mapper = self._mapper
         mapper.SetInputConnection(contour.GetOutputPort())
+
         if color_volume is not None and color_volume.shape == density.shape:
             polydata = contour.GetOutput()
             points = polydata.GetPoints()
             if points and points.GetNumberOfPoints() > 0:
                 points_array = vtk_np.vtk_to_numpy(points.GetData())
-                # FIX GUI-003: Skip normalization for phase/spin modes (already [0,1])
+
                 skip_norm = color_mode in ("phase", "spin")
                 color_vals = compute_isosurface_colors_vectorized(
                     points_array, color_volume, grid, skip_normalization=skip_norm
@@ -211,18 +282,24 @@ class Dirac3DView(QWidget):
                 mapper.ScalarVisibilityOff()
         else:
             mapper.ScalarVisibilityOff()
-        actor = vtkActor()
+
+        # FIX BUG-NEW-007: Reuse actor instead of creating new one every frame
+        if self._actor is None:
+            self._actor = vtkActor()
+            self.renderer.AddActor(self._actor)
+        actor = self._actor
         actor.SetMapper(mapper)
         actor.GetProperty().SetOpacity(0.8)
-        # FIX GUI-005: Set consistent fallback color when scalar visibility is off
+
         if color_volume is None or not mapper.GetScalarVisibility():
             actor.GetProperty().SetColor(self.colors.GetColor3d("Cyan"))
-        if self._actor:
-            self.renderer.RemoveActor(self._actor)
-        self.renderer.AddActor(actor)
-        self._actor = actor
+
         bounds = actor.GetBounds()
-        diag = np.sqrt((bounds[1]-bounds[0])**2 + (bounds[3]-bounds[2])**2 + (bounds[5]-bounds[4])**2)
+        diag = np.sqrt(
+            (bounds[1] - bounds[0]) ** 2
+            + (bounds[3] - bounds[2]) ** 2
+            + (bounds[5] - bounds[4]) ** 2
+        )
         if not self._camera_initialized or diag > 1.5 * self._last_diag:
             self.renderer.ResetCamera()
             self._camera_initialized = True
@@ -244,12 +321,29 @@ class Dirac3DView(QWidget):
         self.lut.Build()
 
     def _update_clipping(self, bounds, diag):
+        """Update camera clipping planes based on scene bounds.
+
+        FIX BUG-NEW-012: Ensure near < far and handle small/close scenes.
+        """
         camera = self.renderer.GetActiveCamera()
         cam_pos = np.array(camera.GetPosition())
-        obj_center = np.array([(bounds[0]+bounds[1])/2, (bounds[2]+bounds[3])/2, (bounds[4]+bounds[5])/2])
+        obj_center = np.array(
+            [
+                (bounds[0] + bounds[1]) / 2,
+                (bounds[2] + bounds[3]) / 2,
+                (bounds[4] + bounds[5]) / 2,
+            ]
+        )
         dist = np.linalg.norm(cam_pos - obj_center)
-        near = max(1.0, dist - diag)
-        far = dist + diag * 3
+
+        # FIX BUG-NEW-012: Use proportional near and ensure near < far
+        near = max(1e-3, dist - 2 * diag)
+        far = dist + 5 * diag
+
+        # Ensure near is always less than far
+        if near >= far:
+            near = max(1e-3, far * 0.1)
+
         camera.SetClippingRange(near, far)
 
     def reset_camera(self):
@@ -269,7 +363,7 @@ class DiracSliceView(pg.ImageView):
         self.ui.roiBtn.hide()
 
     def update_from_slice(self, slice_data):
-        # FIX GUI-NEW-001: Use safe empty image instead of potentially missing clear()
+
         if slice_data is None:
             self.setImage(np.zeros((2, 2), dtype=np.float32), autoLevels=False)
         else:
@@ -286,7 +380,7 @@ class DiracLineView(pg.PlotWidget):
         self._curve_radial = None
 
     def update_from_profiles(self, profiles):
-        # FIX GUI-001: Handle empty profiles to clear view
+
         if not profiles:
             if self._curve_line is not None:
                 self._curve_line.setData([], [])
@@ -383,7 +477,11 @@ class StateControlPanel(QWidget):
         self.stateChanged.emit()
 
     def _on_add_bound(self):
-        n, kappa, mj = self.spin_n.value(), self.spin_kappa.value(), self.spin_mj.value()
+        n, kappa, mj = (
+            self.spin_n.value(),
+            self.spin_kappa.value(),
+            self.spin_mj.value(),
+        )
         if kappa == 0:
             QMessageBox.warning(self, "Invalid κ", "κ cannot be 0")
             return
@@ -540,7 +638,9 @@ class TransitionControlPanel(QWidget):
 
     def _get_polarization(self):
         idx = self.combo_pol.currentIndex()
-        return [np.array([0,0,1.]), np.array([1,0,0.]), np.array([0,1,0.])][idx]
+        return [np.array([0, 0, 1.0]), np.array([1, 0, 0.0]), np.array([0, 1, 0.0])][
+            idx
+        ]
 
     def _apply_transition(self):
         i, f = self.combo_i.currentIndex(), self.combo_f.currentIndex()
@@ -549,7 +649,8 @@ class TransitionControlPanel(QWidget):
             return
         omega = None if self.check_resonant.isChecked() else self.spin_omega.value()
         config = TransitionConfig(
-            state_i=i, state_f=f,
+            state_i=i,
+            state_f=f,
             field_amplitude=self.spin_amp.value(),
             field_polarization=self._get_polarization(),
             field_frequency=omega,
@@ -572,7 +673,7 @@ class TransitionControlPanel(QWidget):
                 self.lbl_detuning.setText(f"{info['detuning']:.6e}")
             else:
                 self.lbl_detuning.setText("0 (resonant)")
-            # FIX GUI-004: Use 'is not None' instead of truthiness (0.0 is valid)
+
             if info["dipole_magnitude"] is not None:
                 self.lbl_dipole.setText(f"{info['dipole_magnitude']:.6e}")
             else:
@@ -587,7 +688,7 @@ class ViewControlPanel(QWidget):
     viewSettingsChanged = Signal()
     playbackToggled = Signal(bool)
     resetCameraRequested = Signal()
-    gridChanged = Signal()  # FIX BUG-005: Signal for grid changes requiring panel refresh
+    gridChanged = Signal()
 
     def __init__(self, solver, parent=None):
         super().__init__(parent)
@@ -604,9 +705,13 @@ class ViewControlPanel(QWidget):
         perf_info = get_performance_info()
         g_perf = QGroupBox("Performance")
         f_perf = QFormLayout(g_perf)
-        numba_status = "✓ Enabled" if perf_info["numba_available"] else "✗ Not available"
+        numba_status = (
+            "✓ Enabled" if perf_info["numba_available"] else "✗ Not available"
+        )
         self.lbl_numba = QLabel(numba_status)
-        self.lbl_numba.setStyleSheet("color: green;" if perf_info["numba_available"] else "color: orange;")
+        self.lbl_numba.setStyleSheet(
+            "color: green;" if perf_info["numba_available"] else "color: orange;"
+        )
         f_perf.addRow("Numba JIT:", self.lbl_numba)
         f_perf.addRow("Threads:", QLabel(str(perf_info["num_threads"])))
         layout.addWidget(g_perf)
@@ -628,7 +733,9 @@ class ViewControlPanel(QWidget):
         v_3d.addWidget(self.slider_iso)
         self.combo_color = QComboBox()
         self.combo_color.addItems(["Phase", "Amplitude", "Spin"])
-        self.combo_color.currentIndexChanged.connect(lambda: self.viewSettingsChanged.emit())
+        self.combo_color.currentIndexChanged.connect(
+            lambda: self.viewSettingsChanged.emit()
+        )
         v_3d.addWidget(self.combo_color)
         btn_reset_cam = QPushButton("Reset Camera")
         btn_reset_cam.clicked.connect(self.resetCameraRequested.emit)
@@ -665,7 +772,7 @@ class ViewControlPanel(QWidget):
         self.spin_dt = QDoubleSpinBox()
         self.spin_dt.setRange(0.01, 10.0)
         self.spin_dt.setValue(1.0)
-        self.spin_dt.valueChanged.connect(lambda v: setattr(self, '_dt', v))
+        self.spin_dt.valueChanged.connect(lambda v: setattr(self, "_dt", v))
         f_time.addRow("Δt", self.spin_dt)
         self.lbl_time = QLabel("t = 0.000")
         f_time.addRow(self.lbl_time)
@@ -678,8 +785,9 @@ class ViewControlPanel(QWidget):
     def _on_iso_changed(self, value):
         self._iso_fraction = value / 100.0
         if self._iso_mode == "percentile":
-            percentile = 80 + (self._iso_fraction - 0.01) * (99.9 - 80) / 0.98
-            self.lbl_iso.setText(f"Iso level: {value}% → {percentile:.1f}th percentile")
+            # FIX BUG-NEW-009: Label now describes actual behavior - enclosed probability
+            enclosed_pct = (1.0 - self._iso_fraction) * 100
+            self.lbl_iso.setText(f"Iso level: {value}% → encloses {enclosed_pct:.0f}% probability")
         else:
             self.lbl_iso.setText(f"Iso level: {value}% of max")
         self.viewSettingsChanged.emit()
@@ -692,27 +800,33 @@ class ViewControlPanel(QWidget):
     def _on_grid_size_changed(self, index):
         grid_sizes = [32, 48, 64, 96, 128, 256]
         new_size = grid_sizes[index]
-        n_points = new_size ** 3
+        n_points = new_size**3
         if n_points < 1_000_000:
             self.lbl_grid_info.setText(f"~{n_points//1000}k points")
         else:
             self.lbl_grid_info.setText(f"~{n_points//1_000_000:.1f}M points")
         current_grid = self.solver.grid
         new_grid = DiracGridConfig(
-            nx=new_size, ny=new_size, nz=new_size,
+            nx=new_size,
+            ny=new_size,
+            nz=new_size,
             x_range=(current_grid.x_min, current_grid.x_max),
             y_range=(current_grid.y_min, current_grid.y_max),
             z_range=(current_grid.z_min, current_grid.z_max),
         )
         try:
             self.solver.update_grid(new_grid)
-            self.gridChanged.emit()  # FIX BUG-005: Notify panels to refresh
+            self.gridChanged.emit()
             self.viewSettingsChanged.emit()
         except Exception as e:
-            QMessageBox.warning(self, "Grid Update Error", f"Failed to update grid: {e}")
+            QMessageBox.warning(
+                self, "Grid Update Error", f"Failed to update grid: {e}"
+            )
 
     def _on_slice_changed(self):
-        self._slice_quantity = ["density", "large", "small"][self.combo_quantity.currentIndex()]
+        self._slice_quantity = ["density", "large", "small"][
+            self.combo_quantity.currentIndex()
+        ]
         self._slice_plane = self.combo_plane.currentText()
         self.viewSettingsChanged.emit()
 
@@ -801,7 +915,7 @@ class VisualizationController:
         self.diag_panel = diag_panel
 
     def refresh(self):
-        # FIX GUI-001: Clear all views when no states remain
+
         if self.solver.superposition.n_states() == 0:
             self.view3d.update_from_density(None, self.solver.grid)
             self.view2d.update_from_slice(None)
@@ -812,25 +926,29 @@ class VisualizationController:
         density = self.solver._compute_density_optimized(psi)
         color_vol = self.solver.compute_color_volume(psi, self.view_panel.color_mode)
         self.view3d.update_from_density(
-            density, self.solver.grid,
+            density,
+            self.solver.grid,
             self.view_panel.iso_fraction,
-            color_vol, self.view_panel.color_mode,
-            self.view_panel.iso_mode
+            color_vol,
+            self.view_panel.color_mode,
+            self.view_panel.iso_mode,
         )
-        
-        # FIX GUI-002: Use slice_quantity from view panel instead of always using total density
-        mid = (self.solver.grid.nx//2, self.solver.grid.ny//2, self.solver.grid.nz//2)
+
+        mid = (
+            self.solver.grid.nx // 2,
+            self.solver.grid.ny // 2,
+            self.solver.grid.nz // 2,
+        )
         plane = self.view_panel.slice_plane
         quantity = self.view_panel.slice_quantity
-        
-        # Compute the appropriate slice based on quantity
+
         if quantity == "large":
-            slice_source = np.real(np.sum(np.abs(psi[:2])**2, axis=0))
+            slice_source = np.real(np.sum(np.abs(psi[:2]) ** 2, axis=0))
         elif quantity == "small":
-            slice_source = np.real(np.sum(np.abs(psi[2:])**2, axis=0))
-        else:  # "density" or default
+            slice_source = np.real(np.sum(np.abs(psi[2:]) ** 2, axis=0))
+        else:
             slice_source = density
-        
+
         if plane == "xy":
             slice_data = slice_source[:, :, mid[2]]
         elif plane == "xz":
@@ -838,10 +956,15 @@ class VisualizationController:
         else:
             slice_data = slice_source[mid[0], :, :]
         self.view2d.update_from_slice(slice_data)
-        line_coord = np.linspace(self.solver.grid.z_min, self.solver.grid.z_max, self.solver.grid.nz)
+        line_coord = np.linspace(
+            self.solver.grid.z_min, self.solver.grid.z_max, self.solver.grid.nz
+        )
         line_prof = density[mid[0], mid[1], :]
-        rad_coord, rad_prof = self.solver.radial_distribution()
-        self.view1d.update_from_profiles({"line": (line_coord, line_prof), "radial": (rad_coord, rad_prof)})
+        # FIX BUG-012: Use pre-computed density instead of recomputing
+        rad_coord, rad_prof = self.solver.radial_distribution_from_density(density)
+        self.view1d.update_from_profiles(
+            {"line": (line_coord, line_prof), "radial": (rad_coord, rad_prof)}
+        )
         self.diag_panel.update_from_solver()
 
 
@@ -860,8 +983,12 @@ class MainWindow(QMainWindow):
         self.view_panel = ViewControlPanel(self.solver, self)
         self.diag_panel = DiagnosticsPanel(self.solver, self)
         self.controller = VisualizationController(
-            self.solver, self.view3d, self.view2d, self.view1d,
-            self.view_panel, self.diag_panel
+            self.solver,
+            self.view3d,
+            self.view2d,
+            self.view1d,
+            self.view_panel,
+            self.diag_panel,
         )
         self._build_ui()
         self._connect_signals()
@@ -875,10 +1002,12 @@ class MainWindow(QMainWindow):
     def _create_solver(self):
         bohr = 1.0 / ALPHA_FS
         grid = DiracGridConfig(
-            nx=64, ny=64, nz=64,
-            x_range=(-10*bohr, 10*bohr),
-            y_range=(-10*bohr, 10*bohr),
-            z_range=(-10*bohr, 10*bohr),
+            nx=64,
+            ny=64,
+            nz=64,
+            x_range=(-10 * bohr, 10 * bohr),
+            y_range=(-10 * bohr, 10 * bohr),
+            z_range=(-10 * bohr, 10 * bohr),
         )
         solver = DiracSolver(grid, FieldConfig(Z=1), include_rest_mass=False)
         return solver
@@ -926,7 +1055,7 @@ class MainWindow(QMainWindow):
         self.view_panel.viewSettingsChanged.connect(self.controller.refresh)
         self.view_panel.playbackToggled.connect(self._on_playback_toggled)
         self.view_panel.resetCameraRequested.connect(self.view3d.reset_camera)
-        # FIX BUG-005: Refresh state panels after grid changes
+
         self.view_panel.gridChanged.connect(self._on_grid_changed)
 
     def _on_grid_changed(self):
@@ -944,7 +1073,9 @@ class MainWindow(QMainWindow):
             self.solver.set_evolution_mode("stationary")
         else:
             if self.solver.superposition.n_states() < 2:
-                QMessageBox.warning(self, "Error", "Need at least 2 states for transitions")
+                QMessageBox.warning(
+                    self, "Error", "Need at least 2 states for transitions"
+                )
                 self.mode_combo.setCurrentIndex(0)
                 return
             self.trans_panel._apply_transition()
