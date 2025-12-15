@@ -41,6 +41,9 @@ import physics
 import rendering
 import model
 
+# Import GPU helper functions from rendering
+from rendering import to_numpy, is_gpu_available, get_device_name
+
 
 # -----------------------------
 # VTK view: density isosurface
@@ -85,28 +88,29 @@ def scale_grid_keep_spacing(grid: rendering.RenderGrid, extent_factor: float) ->
 
     return rendering.RenderGrid(nx=nx, ny=ny, nz=nz, x_range=xr, y_range=yr, z_range=zr)
 
-def _iso_touches_boundary(density: np.ndarray, iso_value: float, *, border: int = 0) -> bool:
+def _iso_touches_boundary(density, iso_value: float, *, border: int = 0) -> bool:
     """
     True if the iso-surface (density >= iso_value) hits any face of the grid.
     border lets you treat a few voxels near the edge as "edge".
+    
+    Handles both NumPy and CuPy arrays.
     """
+    # Convert to numpy for boundary checking (small slices, not worth GPU overhead)
+    density = to_numpy(density)
+    
     if density.size == 0:
         return False
     b = int(max(0, border))
     nx, ny, nz = density.shape
     b = min(b, nx - 1, ny - 1, nz - 1)
 
-    mask = (density >= iso_value)
-    if not np.any(mask):
-        return False
-
-    # Any 'True' on the boundary slabs?
-    if np.any(mask[: b + 1, :, :]): return True
-    if np.any(mask[nx - 1 - b :, :, :]): return True
-    if np.any(mask[:, : b + 1, :]): return True
-    if np.any(mask[:, ny - 1 - b :, :]): return True
-    if np.any(mask[:, :, : b + 1]): return True
-    if np.any(mask[:, :, nz - 1 - b :]): return True
+    # Fast path: check if max on any boundary exceeds threshold
+    if np.max(density[: b + 1, :, :]) >= iso_value: return True
+    if np.max(density[nx - 1 - b :, :, :]) >= iso_value: return True
+    if np.max(density[:, : b + 1, :]) >= iso_value: return True
+    if np.max(density[:, ny - 1 - b :, :]) >= iso_value: return True
+    if np.max(density[:, :, : b + 1]) >= iso_value: return True
+    if np.max(density[:, :, nz - 1 - b :]) >= iso_value: return True
     return False
 
 
@@ -189,6 +193,11 @@ class Dirac3DView(QWidget):
             return
 
         iso_fraction_of_max = float(np.clip(iso_fraction_of_max, 0.001, 0.999))
+
+        # Convert to numpy if GPU arrays (VTK requires numpy)
+        density = to_numpy(density)
+        if rgb_volume is not None:
+            rgb_volume = to_numpy(rgb_volume)
 
         nx, ny, nz = density.shape
         dx, dy, dz = _grid_dxdy_dz(grid)
@@ -381,6 +390,12 @@ class MainWindow(QMainWindow):
         self.lbl_fit_info = QLabel("fit: --")
         self.lbl_fit_info.setStyleSheet("color: gray; font-size: 10px;")
         f_atom.addRow("Auto-fit", self.lbl_fit_info)
+
+        # GPU status display
+        gpu_status = "GPU: " + get_device_name() if is_gpu_available() else "GPU: Not available (using CPU)"
+        self.lbl_gpu_info = QLabel(gpu_status)
+        self.lbl_gpu_info.setStyleSheet("color: green; font-size: 10px;" if is_gpu_available() else "color: orange; font-size: 10px;")
+        f_atom.addRow("Compute", self.lbl_gpu_info)
 
         self.btn_reset_cam = QPushButton("Reset camera")
         self.btn_reset_cam.clicked.connect(self.view3d.reset_camera)
@@ -636,7 +651,9 @@ class MainWindow(QMainWindow):
         did_expand = False
 
         for _ in range(max_iter):
-            iso_value = iso_frac * float(np.max(dens))
+            # Handle GPU arrays - convert to numpy for max calculation
+            dens_np = to_numpy(dens)
+            iso_value = iso_frac * float(np.max(dens_np))
             if iso_value <= 0.0 or not np.isfinite(iso_value):
                 break
 
